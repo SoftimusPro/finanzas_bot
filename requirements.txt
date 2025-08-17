@@ -1,0 +1,7 @@
+python-telegram-bot[job-queue]==20.3
+matplotlib
+seaborn
+scikit-learn
+numpy
+python-dotenv
+flask
