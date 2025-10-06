@@ -256,10 +256,104 @@ async def gasto_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -----------------------------
 # PRODUCTOS
 # -----------------------------
-# [Sección completa de Productos que te pasé antes]
-# Incluye: PRODUCTO_OPCION, PRODUCTO_CATEGORIA, PRODUCTO_NUEVO, PRODUCTO_ELIMINAR,
-# PRODUCTO_ACTUALIZAR, PRODUCTO_ACTUALIZAR_PRECIO
-# -----------------------------
+async def productos_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Opciones de productos:", reply_markup=productos_keyboard)
+    return PRODUCTO_OPCION
+
+async def productos_opcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "🔙 Menú principal":
+        await update.message.reply_text("Volviendo al menú principal.", reply_markup=main_keyboard)
+        return ConversationHandler.END
+    elif text == "Agregar Producto":
+        await update.message.reply_text("Escribe la categoría del producto a agregar:")
+        return PRODUCTO_CATEGORIA
+    elif text == "Eliminar Producto":
+        await update.message.reply_text("Escribe la categoría del producto a eliminar:")
+        return PRODUCTO_ELIMINAR
+    elif text == "Actualizar Producto":
+        await update.message.reply_text("Escribe la categoría del producto a actualizar:")
+        return PRODUCTO_ACTUALIZAR
+    elif text == "Ver Productos":
+        db = _db_load()
+        user = _get_user(db, update.effective_user.id)
+        msg = "📦 Productos:\n"
+        for cat, prods in user['productos'].items():
+            msg += f"\n*{cat}*:\n"
+            for p, v in prods.items():
+                msg += f"  - {p}: {fmt_cup(v)}\n"
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=productos_keyboard)
+        return PRODUCTO_OPCION
+    else:
+        await update.message.reply_text("Opción no válida.", reply_markup=productos_keyboard)
+        return PRODUCTO_OPCION
+
+async def producto_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    categoria = update.message.text.strip()
+    context.user_data['producto_categoria'] = categoria
+    await update.message.reply_text("Ahora escribe el nombre del producto y su precio separado por coma (Ej: Arroz, 50):")
+    return PRODUCTO_NUEVO
+
+async def producto_nuevo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db = _db_load()
+    user = _get_user(db, update.effective_user.id)
+    try:
+        producto, precio = update.message.text.split(",")
+        producto = producto.strip()
+        precio = float(precio.strip())
+        cat = context.user_data.get('producto_categoria', 'Otros')
+        if cat not in user['productos']:
+            user['productos'][cat] = {}
+        user['productos'][cat][producto] = precio
+        _db_save(db)
+        await update.message.reply_text(f"✅ Producto '{producto}' agregado con precio {fmt_cup(precio)}", reply_markup=productos_keyboard)
+    except ValueError:
+        await update.message.reply_text("⚠️ Formato inválido, intenta de nuevo.", reply_markup=productos_keyboard)
+    return PRODUCTO_OPCION
+
+async def producto_eliminar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db = _db_load()
+    user = _get_user(db, update.effective_user.id)
+    cat = update.message.text.strip()
+    if cat in user['productos'] and user['productos'][cat]:
+        msg = "Escribe el nombre del producto a eliminar:\n" + ", ".join(user['productos'][cat].keys())
+        context.user_data['producto_categoria'] = cat
+        await update.message.reply_text(msg)
+        return PRODUCTO_ELIMINAR
+    else:
+        await update.message.reply_text("Categoría vacía o no existe.", reply_markup=productos_keyboard)
+        return PRODUCTO_OPCION
+
+async def producto_actualizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db = _db_load()
+    user = _get_user(db, update.effective_user.id)
+    cat = update.message.text.strip()
+    if cat in user['productos'] and user['productos'][cat]:
+        msg = "Escribe el nombre del producto a actualizar:\n" + ", ".join(user['productos'][cat].keys())
+        context.user_data['producto_categoria'] = cat
+        await update.message.reply_text(msg)
+        return PRODUCTO_ACTUALIZAR_PRECIO
+    else:
+        await update.message.reply_text("Categoría vacía o no existe.", reply_markup=productos_keyboard)
+        return PRODUCTO_OPCION
+
+async def producto_actualizar_precio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db = _db_load()
+    user = _get_user(db, update.effective_user.id)
+    cat = context.user_data.get('producto_categoria', 'Otros')
+    try:
+        producto, precio = update.message.text.split(",")
+        producto = producto.strip()
+        precio = float(precio.strip())
+        if cat in user['productos'] and producto in user['productos'][cat]:
+            user['productos'][cat][producto] = precio
+            _db_save(db)
+            await update.message.reply_text(f"✅ Producto '{producto}' actualizado a {fmt_cup(precio)}", reply_markup=productos_keyboard)
+        else:
+            await update.message.reply_text("Producto no encontrado.", reply_markup=productos_keyboard)
+    except ValueError:
+        await update.message.reply_text("⚠️ Formato inválido, intenta de nuevo.", reply_markup=productos_keyboard)
+    return PRODUCTO_OPCION
 
 # -----------------------------
 # CONFIGURACIÓN
@@ -278,7 +372,7 @@ async def config_opcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     elif text == "➕ Agregar categoría":
         await update.message.reply_text("Escribe el nombre de la nueva categoría de gasto:")
-        return CONFIG_OPCION  # usamos mismo estado para recibir texto
+        return CONFIG_OPCION
     elif text == "📊 Resumen financiero":
         total_ingresos = sum(i['monto'] for i in user['ingresos'])
         total_gastos = sum(g['monto'] for g in user['gastos'])
@@ -290,7 +384,6 @@ async def config_opcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=main_keyboard)
         return ConversationHandler.END
     else:
-        # Aquí asumimos que es el nombre de nueva categoría
         categoria = text.strip()
         if categoria not in user['categorias_gasto']:
             user['categorias_gasto'].append(categoria)
@@ -306,7 +399,6 @@ async def config_opcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Conversaciones
     conv_ingreso = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("➕ Ingreso"), ingreso_start)],
         states={
@@ -352,9 +444,6 @@ def main():
     app.add_handler(conv_producto)
     app.add_handler(conv_config)
 
-    # =============================
-    # WEBHOOK
-    # =============================
     webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{TOKEN}"
     logger.info(f"Configurando webhook en: {webhook_url}")
     app.run_webhook(
