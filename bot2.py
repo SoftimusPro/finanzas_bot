@@ -1,103 +1,16 @@
 import os
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ConversationHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
-# JobQueue opcional
-# from telegram.ext import JobQueue  
+import json
+import logging
+from pathlib import Path
+from datetime import datetime
 
-TOKEN = os.environ.get("TOKEN")  # Tu token de bot en Railway
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # URL de tu deploy
-PORT = int(os.environ.get("PORT", 8443))  
-
-# --- HANDLERS DE EJEMPLO ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("¡Bot activo y listo!")
-
-# Conversación de ejemplo
-GASTO, MONTO = range(2)
-async def gasto_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Ingrese el gasto:")
-    return GASTO
-
-async def gasto_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    monto = update.message.text
-    await update.message.reply_text(f"Gasto registrado: {monto}")
-    return ConversationHandler.END
-
-# Conversación de productos
-PRODUCTO, CANTIDAD = range(2)
-async def producto_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Ingrese el nombre del producto:")
-    return PRODUCTO
-
-async def producto_cantidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cantidad = update.message.text
-    await update.message.reply_text(f"Producto registrado: {cantidad}")
-    return ConversationHandler.END
-
-# --- ERROR HANDLER GLOBAL ---
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    print(f"Ocurrió un error: {context.error}")
-
-# --- CREAR LA APP ---
-application = ApplicationBuilder().token(TOKEN).build()
-
-# ConversationHandlers con per_message=True
-conv_gasto = ConversationHandler(
-    entry_points=[CommandHandler('gasto', gasto_start)],
-    states={
-        GASTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, gasto_monto)]
-    },
-    fallbacks=[CommandHandler('cancel', lambda u,c: ConversationHandler.END)],
-    per_message=True
-)
-
-conv_productos = ConversationHandler(
-    entry_points=[CommandHandler('producto', producto_start)],
-    states={
-        PRODUCTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, producto_cantidad)]
-    },
-    fallbacks=[CommandHandler('cancel', lambda u,c: ConversationHandler.END)],
-    per_message=True
-)
-
-# Añadir handlers
-application.add_handler(CommandHandler('start', start))
-application.add_handler(conv_gasto)
-application.add_handler(conv_productos)
-application.add_error_handler(error_handler)
-
-# --- RUN WEBHOOK (RAILWAY) ---
-application.run_webhook(
-    listen="0.0.0.0",
-    port=PORT,
-    url_path=TOKEN,
-    webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
-)
 from telegram import (
-    Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Bot
+    Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters,
-    ContextTypes, ConversationHandler, CallbackQueryHandler, JobQueue
+    ContextTypes, ConversationHandler, CallbackQueryHandler
 )
-import json
-from pathlib import Path
-from datetime import datetime, time
-import matplotlib.pyplot as plt
-import seaborn as sns
-import io
-import logging
-import signal
-import pickle
-import os
 
 # =============================
 # CONFIGURACIÓN INICIAL
@@ -109,10 +22,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", 8443))
 bot = Bot(token=TOKEN)
 
 DB_FILE = Path(__file__).parent / "finanzas.json"
-STATE_FILE = Path(__file__).parent / "conversation_states.pkl"
 
 # =============================
 # ESTADOS
@@ -121,15 +35,14 @@ STATE_FILE = Path(__file__).parent / "conversation_states.pkl"
     SELECT_INGRESO_CAT, INGRESO_OTRO, INGRESO_MONTO,
     SELECT_GASTO_CAT, SELECT_PRODUCTO_GASTO, GASTO_MANUAL,
     PRODUCTO_OPCION, PRODUCTO_NUEVO, PRODUCTO_ELIMINAR,
-    PRODUCTO_ACTUALIZAR, PRODUCTO_ACTUALIZAR_PRECIO,
-    RESUMEN_OPCION, SET_BUDGET_CAT, SET_BUDGET_AMOUNT
-) = range(14)
+    PRODUCTO_ACTUALIZAR, PRODUCTO_ACTUALIZAR_PRECIO
+) = range(11)
 
 # =============================
 # TECLADOS
 # =============================
 main_keyboard = ReplyKeyboardMarkup(
-    [["➕ Ingreso", "➖ Gasto"], ["📦 Productos", "📊 Resumen", "⚙️ Configuración"]],
+    [["➕ Ingreso", "➖ Gasto"], ["📦 Productos", "⚙️ Configuración"]],
     resize_keyboard=True
 )
 
@@ -148,13 +61,6 @@ categorias_gasto_keyboard = ReplyKeyboardMarkup(
 
 productos_keyboard = ReplyKeyboardMarkup(
     [["Agregar Producto", "Eliminar Producto", "Actualizar Producto"], ["Ver Productos"], ["🔙 Menú principal"]],
-    resize_keyboard=True
-)
-
-resumen_keyboard = ReplyKeyboardMarkup(
-    [["Resumen de gastos", "Resumen de ingresos"], 
-     ["Resumen general", "Gráfico", "Análisis de hábitos"],
-     ["Exportar datos", "🔙 Menú principal"]],
     resize_keyboard=True
 )
 
@@ -204,30 +110,24 @@ def saldo_actual(user):
     total_gastos = sum(g['monto'] for g in user.get('gastos', []))
     return total_ingresos - total_gastos
 
-# =============================
-# FORMATEO DE MONEDA
-# =============================
 def fmt_cup(value: float) -> str:
     s = f"{value:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
     return f"{s} CUP"
 
 # =============================
-# START
+# HANDLERS
 # =============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Qué bolá, mi hermano. Usa los botones para navegar:", 
+        "👋 Qué bolá, mi hermano. Usa los botones para navegar:",
         reply_markup=main_keyboard
     )
 
-# =============================
+# -----------------------------
 # INGRESOS
-# =============================
+# -----------------------------
 async def ingreso_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Selecciona la categoría del ingreso:", 
-        reply_markup=categorias_ingreso_keyboard
-    )
+    await update.message.reply_text("Selecciona la categoría del ingreso:", reply_markup=categorias_ingreso_keyboard)
     return SELECT_INGRESO_CAT
 
 async def ingreso_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -261,25 +161,16 @@ async def ingreso_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "fecha": datetime.now().isoformat()
         })
         _db_save(db)
-        await update.message.reply_text(
-            f"✅ Ingreso registrado: {fmt_cup(monto)} en '{categoria}'", 
-            reply_markup=main_keyboard
-        )
+        await update.message.reply_text(f"✅ Ingreso registrado: {fmt_cup(monto)} en '{categoria}'", reply_markup=main_keyboard)
     except ValueError:
-        await update.message.reply_text(
-            "⚠️ Monto inválido. Debe ser un número (ej: 150 o 75.50).", 
-            reply_markup=main_keyboard
-        )
+        await update.message.reply_text("⚠️ Monto inválido. Debe ser un número (ej: 150 o 75.50).", reply_markup=main_keyboard)
     return ConversationHandler.END
 
-# =============================
+# -----------------------------
 # GASTOS
-# =============================
+# -----------------------------
 async def gasto_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Selecciona la categoría del gasto:", 
-        reply_markup=categorias_gasto_keyboard
-    )
+    await update.message.reply_text("Selecciona la categoría del gasto:", reply_markup=categorias_gasto_keyboard)
     return SELECT_GASTO_CAT
 
 async def gasto_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -321,17 +212,9 @@ async def gasto_producto_seleccion(update: Update, context: ContextTypes.DEFAULT
         precio = user['productos'][context.user_data['gasto_categoria']][producto]
         saldo = saldo_actual(user)
         if saldo < precio:
-            await query.message.reply_text(
-                f"⚠️ Saldo insuficiente: {fmt_cup(saldo)}. No se puede gastar {fmt_cup(precio)}.",
-                reply_markup=main_keyboard
-            )
+            await query.message.reply_text(f"⚠️ Saldo insuficiente: {fmt_cup(saldo)}. No se puede gastar {fmt_cup(precio)}.", reply_markup=main_keyboard)
             return ConversationHandler.END
-        user['gastos'].append({
-            "monto": precio,
-            "categoria": context.user_data['gasto_categoria'],
-            "producto": producto,
-            "fecha": datetime.now().isoformat()
-        })
+        user['gastos'].append({"monto": precio, "categoria": context.user_data['gasto_categoria'], "producto": producto, "fecha": datetime.now().isoformat()})
         _db_save(data)
         await query.message.reply_text(f"✅ Gasto registrado: {producto} {fmt_cup(precio)}", reply_markup=main_keyboard)
         return ConversationHandler.END
@@ -349,32 +232,22 @@ async def gasto_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if cat not in user['productos']:
                 user['productos'][cat] = {}
             user['productos'][cat][producto] = precio
-            user['gastos'].append({
-                "monto": precio,
-                "categoria": cat,
-                "producto": producto,
-                "fecha": datetime.now().isoformat()
-            })
+            user['gastos'].append({"monto": precio, "categoria": cat, "producto": producto, "fecha": datetime.now().isoformat()})
             _db_save(db)
             await update.message.reply_text(f"✅ Producto '{producto}' agregado y gasto registrado: {fmt_cup(precio)}", reply_markup=main_keyboard)
         else:
             monto = float(text)
             cat = context.user_data.get('gasto_categoria', "Otros")
-            user['gastos'].append({
-                "monto": monto,
-                "categoria": cat,
-                "producto": None,
-                "fecha": datetime.now().isoformat()
-            })
+            user['gastos'].append({"monto": monto, "categoria": cat, "producto": None, "fecha": datetime.now().isoformat()})
             _db_save(db)
             await update.message.reply_text(f"✅ Gasto registrado: {fmt_cup(monto)}", reply_markup=main_keyboard)
     except ValueError:
         await update.message.reply_text("⚠️ Entrada inválida, intenta de nuevo.", reply_markup=main_keyboard)
     return ConversationHandler.END
 
-# =============================
+# -----------------------------
 # PRODUCTOS
-# =============================
+# -----------------------------
 async def productos_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Opciones de productos:", reply_markup=productos_keyboard)
     return PRODUCTO_OPCION
@@ -387,12 +260,15 @@ async def productos_opcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "Agregar Producto":
         await update.message.reply_text("Escribe: nombre del producto, categoría, precio (ej: Arroz, Comida, 50):")
         return PRODUCTO_NUEVO
+
     elif text == "Eliminar Producto":
         await update.message.reply_text("Escribe la categoría y nombre del producto separados por coma (ej: Comida, Arroz):")
         return PRODUCTO_ELIMINAR
+
     elif text == "Actualizar Producto":
-        await update.message.reply_text("Escribe la categoría y nombre del producto a actualizar (ej: Comida, Arroz):")
+        await update.message.reply_text("Escribe la categoría y nombre del producto a actualizar separados por coma (ej: Comida, Arroz):")
         return PRODUCTO_ACTUALIZAR
+
     elif text == "Ver Productos":
         msg = "📦 Productos registrados:\n"
         for cat, prods in user['productos'].items():
@@ -401,22 +277,94 @@ async def productos_opcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f" - {p}: {fmt_cup(v)}\n"
         await update.message.reply_text(msg, parse_mode="Markdown")
         return ConversationHandler.END
+
     else:
         await update.message.reply_text("Volviendo al menú principal.", reply_markup=main_keyboard)
         return ConversationHandler.END
 
-# =============================
-# CONFIGURACIÓN Y PRESUPUESTOS
-# =============================
+# AGREGAR, ELIMINAR, ACTUALIZAR PRODUCTOS
+async def producto_nuevo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    db = _db_load()
+    user = _get_user(db, update.effective_user.id)
+    try:
+        nombre, categoria, precio = map(str.strip, text.split(","))
+        precio = float(precio)
+        if categoria not in user['productos']:
+            user['productos'][categoria] = {}
+        user['productos'][categoria][nombre] = precio
+        _db_save(db)
+        await update.message.reply_text(f"✅ Producto '{nombre}' agregado en '{categoria}' con precio {fmt_cup(precio)}", reply_markup=productos_keyboard)
+    except ValueError:
+        await update.message.reply_text("⚠️ Formato incorrecto. Usa: Nombre, Categoría, Precio (ej: Arroz, Comida, 50)")
+        return PRODUCTO_NUEVO
+    return PRODUCTO_OPCION
+
+async def producto_eliminar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    db = _db_load()
+    user = _get_user(db, update.effective_user.id)
+    try:
+        categoria, nombre = map(str.strip, text.split(","))
+        if categoria in user['productos'] and nombre in user['productos'][categoria]:
+            del user['productos'][categoria][nombre]
+            if not user['productos'][categoria]:
+                del user['productos'][categoria]
+            _db_save(db)
+            await update.message.reply_text(f"✅ Producto '{nombre}' eliminado de '{categoria}'", reply_markup=productos_keyboard)
+        else:
+            await update.message.reply_text("⚠️ Producto o categoría no encontrados.")
+            return PRODUCTO_ELIMINAR
+    except ValueError:
+        await update.message.reply_text("⚠️ Formato incorrecto. Usa: Categoría, Nombre (ej: Comida, Arroz)")
+        return PRODUCTO_ELIMINAR
+    return PRODUCTO_OPCION
+
+async def producto_actualizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    db = _db_load()
+    user = _get_user(db, update.effective_user.id)
+    try:
+        categoria, nombre = map(str.strip, text.split(","))
+        if categoria in user['productos'] and nombre in user['productos'][categoria]:
+            context.user_data['actualizar_producto'] = (categoria, nombre)
+            await update.message.reply_text(f"Escribe el nuevo precio para '{nombre}' en '{categoria}':")
+            return PRODUCTO_ACTUALIZAR_PRECIO
+        else:
+            await update.message.reply_text("⚠️ Producto o categoría no encontrados.")
+            return PRODUCTO_ACTUALIZAR
+    except ValueError:
+        await update.message.reply_text("⚠️ Formato incorrecto. Usa: Categoría, Nombre (ej: Comida, Arroz)")
+        return PRODUCTO_ACTUALIZAR
+
+async def producto_actualizar_precio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    db = _db_load()
+    user = _get_user(db, update.effective_user.id)
+    try:
+        nuevo_precio = float(text)
+        categoria, nombre = context.user_data['actualizar_producto']
+        user['productos'][categoria][nombre] = nuevo_precio
+        _db_save(db)
+        await update.message.reply_text(f"✅ Producto '{nombre}' actualizado a {fmt_cup(nuevo_precio)}", reply_markup=productos_keyboard)
+    except ValueError:
+        await update.message.reply_text("⚠️ Precio inválido. Intenta de nuevo (ej: 50 o 75.5)")
+        return PRODUCTO_ACTUALIZAR_PRECIO
+    return PRODUCTO_OPCION
+
+# -----------------------------
+# CONFIGURACIÓN
+# -----------------------------
 async def config_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Opciones de configuración:", reply_markup=config_keyboard)
 
-# =============================
+# -----------------------------
 # MAIN
-# =============================
+# -----------------------------
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # Conversaciones
     conv_ingreso = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("➕ Ingreso"), ingreso_start)],
         states={
@@ -441,9 +389,10 @@ def main():
         entry_points=[MessageHandler(filters.Regex("📦 Productos"), productos_start)],
         states={
             PRODUCTO_OPCION: [MessageHandler(filters.TEXT & ~filters.COMMAND, productos_opcion)],
-            PRODUCTO_NUEVO: [MessageHandler(filters.TEXT & ~filters.COMMAND, gasto_manual)],
-            PRODUCTO_ELIMINAR: [MessageHandler(filters.TEXT & ~filters.COMMAND, gasto_manual)],
-            PRODUCTO_ACTUALIZAR: [MessageHandler(filters.TEXT & ~filters.COMMAND, gasto_manual)],
+            PRODUCTO_NUEVO: [MessageHandler(filters.TEXT & ~filters.COMMAND, producto_nuevo)],
+            PRODUCTO_ELIMINAR: [MessageHandler(filters.TEXT & ~filters.COMMAND, producto_eliminar)],
+            PRODUCTO_ACTUALIZAR: [MessageHandler(filters.TEXT & ~filters.COMMAND, producto_actualizar)],
+            PRODUCTO_ACTUALIZAR_PRECIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, producto_actualizar_precio)]
         },
         fallbacks=[CommandHandler("start", start)]
     )
@@ -454,9 +403,12 @@ def main():
     app.add_handler(conv_productos)
     app.add_handler(MessageHandler(filters.Regex("⚙️ Configuración"), config_start))
 
-    # RUN
     logger.info("Bot iniciado ✅")
-    app.run_polling()
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+    )
 
 if __name__ == "__main__":
     main()
