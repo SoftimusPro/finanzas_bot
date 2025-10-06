@@ -404,11 +404,14 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("⚙️ Configuración"), config_start))
 
     logger.info("Bot iniciado ✅")
+    webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{TOKEN}"  # evita doble slash
+    logger.info(f"Configurando webhook en: {webhook_url}")
+
     app.run_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 8443)),
+        port=PORT,
         url_path=TOKEN,
-        webhook_url=f"{os.environ.get('WEBHOOK_URL')}/{TOKEN}"
+        webhook_url=webhook_url
     )
 
 
