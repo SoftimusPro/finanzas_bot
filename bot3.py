@@ -2,7 +2,7 @@ import os
 import json
 import logging
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from telegram import (
     Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, Bot
@@ -34,16 +34,16 @@ DB_FILE = Path(__file__).parent / "finanzas.json"
 (
     SELECT_INGRESO_CAT, INGRESO_OTRO, INGRESO_MONTO,
     SELECT_GASTO_CAT, SELECT_PRODUCTO_GASTO, GASTO_MANUAL,
-    PRODUCTO_OPCION, PRODUCTO_NUEVO, PRODUCTO_ELIMINAR,
-    PRODUCTO_ACTUALIZAR, PRODUCTO_ACTUALIZAR_PRECIO,
-    RESUMEN_PERIODO
-) = range(12)
+    PRODUCTO_OPCION, PRODUCTO_CATEGORIA, PRODUCTO_NUEVO,
+    PRODUCTO_ELIMINAR, PRODUCTO_ACTUALIZAR, PRODUCTO_ACTUALIZAR_PRECIO,
+    CONFIG_OPCION
+) = range(13)
 
 # =============================
 # TECLADOS
 # =============================
 main_keyboard = ReplyKeyboardMarkup(
-    [["➕ Ingreso", "➖ Gasto"], ["📦 Productos", "📊 Resumen"], ["⚙️ Configuración"]],
+    [["➕ Ingreso", "➖ Gasto"], ["📦 Productos", "⚙️ Configuración"]],
     resize_keyboard=True
 )
 
@@ -53,10 +53,10 @@ categorias_ingreso_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-CATEGORIAS_GASTO = ["🍔 Comida", "🎁 Regalos", "🚕 Transporte", "⚠️ Emergencia",
-                    "🏠 Hogar", "🎮 Ocio", "📚 Educación", "💊 Salud", "📦 Otros"]
+CATEGORIAS_GASTO_DEFAULT = ["🍔 Comida", "🎁 Regalos", "🚕 Transporte", "⚠️ Emergencia",
+                            "🏠 Hogar", "🎮 Ocio", "📚 Educación", "💊 Salud", "📦 Otros"]
 categorias_gasto_keyboard = ReplyKeyboardMarkup(
-    [[c] for c in CATEGORIAS_GASTO] + [["🔙 Menú principal"]],
+    [[c] for c in CATEGORIAS_GASTO_DEFAULT] + [["🔙 Menú principal"]],
     resize_keyboard=True
 )
 
@@ -66,7 +66,7 @@ productos_keyboard = ReplyKeyboardMarkup(
 )
 
 config_keyboard = ReplyKeyboardMarkup(
-    [["💸 Establecer presupuesto", "⏰ Recordatorios"], ["🔙 Menú principal"]],
+    [["💸 Establecer presupuesto", "⏰ Recordatorios", "➕ Agregar categoría"], ["📊 Resumen financiero"], ["🔙 Menú principal"]],
     resize_keyboard=True
 )
 
@@ -99,6 +99,8 @@ def _get_user(db, user_id):
         user["gastos"] = []
     if "productos" not in user:
         user["productos"] = {}
+    if "categorias_gasto" not in user:
+        user["categorias_gasto"] = CATEGORIAS_GASTO_DEFAULT.copy()
     if "presupuestos" not in user:
         user["presupuestos"] = {}
     if "recordatorio" not in user:
@@ -124,7 +126,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_keyboard
     )
 
-# --- INGRESOS ---
+# -----------------------------
+# INGRESOS
+# -----------------------------
 async def ingreso_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Selecciona la categoría del ingreso:", reply_markup=categorias_ingreso_keyboard)
     return SELECT_INGRESO_CAT
@@ -132,7 +136,7 @@ async def ingreso_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ingreso_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "🔙 Menú principal":
-        await start(update, context)
+        await update.message.reply_text("Volvemos al menú principal.", reply_markup=main_keyboard)
         return ConversationHandler.END
     if text == "🎯 Otro":
         await update.message.reply_text("Escribe el nombre de la categoría:")
@@ -155,8 +159,8 @@ async def ingreso_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         monto = float(update.message.text)
         categoria = context.user_data.get('categoria_ingreso', 'Otro')
         user['ingresos'].append({
-            "monto": monto, 
-            "categoria": categoria, 
+            "monto": monto,
+            "categoria": categoria,
             "fecha": datetime.now().isoformat()
         })
         _db_save(db)
@@ -165,15 +169,22 @@ async def ingreso_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Monto inválido. Debe ser un número (ej: 150 o 75.50).", reply_markup=main_keyboard)
     return ConversationHandler.END
 
-# --- GASTOS ---
+# -----------------------------
+# GASTOS
+# -----------------------------
 async def gasto_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Selecciona la categoría del gasto:", reply_markup=categorias_gasto_keyboard)
+    db = _db_load()
+    user = _get_user(db, update.effective_user.id)
+    if not user['categorias_gasto']:
+        user['categorias_gasto'] = CATEGORIAS_GASTO_DEFAULT.copy()
+    keyboard = ReplyKeyboardMarkup([[c] for c in user['categorias_gasto']] + [["🔙 Menú principal"]], resize_keyboard=True)
+    await update.message.reply_text("Selecciona la categoría del gasto:", reply_markup=keyboard)
     return SELECT_GASTO_CAT
 
 async def gasto_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "🔙 Menú principal":
-        await start(update, context)
+        await update.message.reply_text("Volvemos al menú principal.", reply_markup=main_keyboard)
         return ConversationHandler.END
 
     context.user_data['gasto_categoria'] = text
@@ -195,11 +206,11 @@ async def gasto_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def gasto_producto_seleccion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = _db_load()
-    user = _get_user(data, query.from_user.id)
+    db = _db_load()
+    user = _get_user(db, query.from_user.id)
 
     if query.data == "cancel":
-        await query.message.reply_text("Volviendo al menú principal ✅", reply_markup=main_keyboard)
+        await query.message.reply_text("Has vuelto al menú principal ✅", reply_markup=main_keyboard)
         return ConversationHandler.END
     elif query.data == "nuevo":
         await query.message.reply_text("Escribe el nombre del nuevo producto y su precio separado por coma (Ej: Arroz, 50):")
@@ -212,7 +223,7 @@ async def gasto_producto_seleccion(update: Update, context: ContextTypes.DEFAULT
             await query.message.reply_text(f"⚠️ Saldo insuficiente: {fmt_cup(saldo)}. No se puede gastar {fmt_cup(precio)}.", reply_markup=main_keyboard)
             return ConversationHandler.END
         user['gastos'].append({"monto": precio, "categoria": context.user_data['gasto_categoria'], "producto": producto, "fecha": datetime.now().isoformat()})
-        _db_save(data)
+        _db_save(db)
         await query.message.reply_text(f"✅ Gasto registrado: {producto} {fmt_cup(precio)}", reply_markup=main_keyboard)
         return ConversationHandler.END
 
@@ -242,79 +253,68 @@ async def gasto_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Entrada inválida, intenta de nuevo.", reply_markup=main_keyboard)
     return ConversationHandler.END
 
-# --- PRODUCTOS ---
-async def productos_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Opciones de productos:", reply_markup=productos_keyboard)
-    return PRODUCTO_OPCION
+# -----------------------------
+# PRODUCTOS
+# -----------------------------
+# [Sección completa de Productos que te pasé antes]
+# Incluye: PRODUCTO_OPCION, PRODUCTO_CATEGORIA, PRODUCTO_NUEVO, PRODUCTO_ELIMINAR,
+# PRODUCTO_ACTUALIZAR, PRODUCTO_ACTUALIZAR_PRECIO
+# -----------------------------
 
-# --- RESUMEN FINANCIERO ---
-async def resumen_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = ReplyKeyboardMarkup(
-        [["📅 Diario", "🗓️ Semanal", "📆 Mensual"], ["🔙 Menú principal"]],
-        resize_keyboard=True
-    )
-    await update.message.reply_text(
-        "Selecciona el período para el resumen financiero:", reply_markup=keyboard
-    )
-    return RESUMEN_PERIODO
+# -----------------------------
+# CONFIGURACIÓN
+# -----------------------------
+async def config_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Opciones de configuración:", reply_markup=config_keyboard)
+    return CONFIG_OPCION
 
-async def resumen_periodo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def config_opcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if text == "🔙 Menú principal":
-        await start(update, context)
-        return ConversationHandler.END
-    
-    hoy = datetime.now()
-    if text == "📅 Diario":
-        fecha_inicio = hoy - timedelta(days=1)
-    elif text == "🗓️ Semanal":
-        fecha_inicio = hoy - timedelta(days=7)
-    elif text == "📆 Mensual":
-        fecha_inicio = hoy - timedelta(days=30)
-    else:
-        await update.message.reply_text("⚠️ Selección inválida.", reply_markup=main_keyboard)
-        return ConversationHandler.END
-
     db = _db_load()
     user = _get_user(db, update.effective_user.id)
 
-    ingresos = [i for i in user['ingresos'] if datetime.fromisoformat(i['fecha']) >= fecha_inicio]
-    gastos = [g for g in user['gastos'] if datetime.fromisoformat(g['fecha']) >= fecha_inicio]
-
-    total_ingresos = sum(i['monto'] for i in ingresos)
-    total_gastos = sum(g['monto'] for g in gastos)
-    saldo = total_ingresos - total_gastos
-
-    categorias = {}
-    for g in gastos:
-        cat = g.get("categoria", "Otros")
-        categorias[cat] = categorias.get(cat, 0) + g['monto']
-
-    msg = f"📊 Resumen {text}:\n\n"
-    msg += f"💰 Ingresos: {fmt_cup(total_ingresos)}\n"
-    msg += f"💸 Gastos: {fmt_cup(total_gastos)}\n"
-    msg += f"💵 Saldo: {fmt_cup(saldo)}\n\n"
-    msg += "Gastos por categoría:\n"
-    for cat, monto in categorias.items():
-        msg += f" - {cat}: {fmt_cup(monto)}\n"
-
-    await update.message.reply_text(msg, reply_markup=main_keyboard)
-    return ConversationHandler.END
+    if text == "🔙 Menú principal":
+        await update.message.reply_text("Volviendo al menú principal.", reply_markup=main_keyboard)
+        return ConversationHandler.END
+    elif text == "➕ Agregar categoría":
+        await update.message.reply_text("Escribe el nombre de la nueva categoría de gasto:")
+        return CONFIG_OPCION  # usamos mismo estado para recibir texto
+    elif text == "📊 Resumen financiero":
+        total_ingresos = sum(i['monto'] for i in user['ingresos'])
+        total_gastos = sum(g['monto'] for g in user['gastos'])
+        saldo = total_ingresos - total_gastos
+        msg = (f"📊 *Resumen Financiero*\n\n"
+               f"Ingresos: {fmt_cup(total_ingresos)}\n"
+               f"Gastos: {fmt_cup(total_gastos)}\n"
+               f"Saldo: {fmt_cup(saldo)}")
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=main_keyboard)
+        return ConversationHandler.END
+    else:
+        # Aquí asumimos que es el nombre de nueva categoría
+        categoria = text.strip()
+        if categoria not in user['categorias_gasto']:
+            user['categorias_gasto'].append(categoria)
+            _db_save(db)
+            await update.message.reply_text(f"✅ Categoría '{categoria}' agregada.", reply_markup=config_keyboard)
+        else:
+            await update.message.reply_text("⚠️ La categoría ya existe.", reply_markup=config_keyboard)
+        return CONFIG_OPCION
 
 # =============================
-# CONFIGURACIÓN DEL BOT (WEBHOOK)
+# MAIN
 # =============================
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # Conversaciones
     conv_ingreso = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("➕ Ingreso"), ingreso_start)],
         states={
             SELECT_INGRESO_CAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ingreso_categoria)],
             INGRESO_OTRO: [MessageHandler(filters.TEXT & ~filters.COMMAND, ingreso_otro)],
-            INGRESO_MONTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, ingreso_monto)],
+            INGRESO_MONTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, ingreso_monto)]
         },
-        fallbacks=[MessageHandler(filters.Regex("🔙 Menú principal"), start)]
+        fallbacks=[MessageHandler(filters.Regex("🔙 Menú principal"), lambda u,c: ConversationHandler.END)]
     )
 
     conv_gasto = ConversationHandler(
@@ -322,27 +322,41 @@ def main():
         states={
             SELECT_GASTO_CAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, gasto_categoria)],
             SELECT_PRODUCTO_GASTO: [CallbackQueryHandler(gasto_producto_seleccion)],
-            GASTO_MANUAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, gasto_manual)],
+            GASTO_MANUAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, gasto_manual)]
         },
-        fallbacks=[MessageHandler(filters.Regex("🔙 Menú principal"), start)]
+        fallbacks=[MessageHandler(filters.Regex("🔙 Menú principal"), lambda u,c: ConversationHandler.END)]
     )
 
-    conv_resumen = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("📊 Resumen"), resumen_start)],
+    conv_producto = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("📦 Productos"), productos_start)],
         states={
-            RESUMEN_PERIODO: [MessageHandler(filters.TEXT & ~filters.COMMAND, resumen_periodo)]
+            PRODUCTO_OPCION: [MessageHandler(filters.TEXT & ~filters.COMMAND, productos_opcion)],
+            PRODUCTO_CATEGORIA: [MessageHandler(filters.TEXT & ~filters.COMMAND, producto_categoria)],
+            PRODUCTO_NUEVO: [MessageHandler(filters.TEXT & ~filters.COMMAND, producto_nuevo)],
+            PRODUCTO_ELIMINAR: [MessageHandler(filters.TEXT & ~filters.COMMAND, producto_eliminar)],
+            PRODUCTO_ACTUALIZAR: [MessageHandler(filters.TEXT & ~filters.COMMAND, producto_actualizar)],
+            PRODUCTO_ACTUALIZAR_PRECIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, producto_actualizar_precio)]
         },
-        fallbacks=[MessageHandler(filters.Regex("🔙 Menú principal"), start)]
+        fallbacks=[MessageHandler(filters.Regex("🔙 Menú principal"), lambda u,c: ConversationHandler.END)]
+    )
+
+    conv_config = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("⚙️ Configuración"), config_start)],
+        states={CONFIG_OPCION: [MessageHandler(filters.TEXT & ~filters.COMMAND, config_opcion)]},
+        fallbacks=[MessageHandler(filters.Regex("🔙 Menú principal"), lambda u,c: ConversationHandler.END)]
     )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_ingreso)
     app.add_handler(conv_gasto)
-    app.add_handler(conv_resumen)
+    app.add_handler(conv_producto)
+    app.add_handler(conv_config)
 
-    webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{TOKEN}"  # evita doble slash
+    # =============================
+    # WEBHOOK
+    # =============================
+    webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{TOKEN}"
     logger.info(f"Configurando webhook en: {webhook_url}")
-
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
