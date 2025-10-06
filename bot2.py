@@ -404,11 +404,11 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("⚙️ Configuración"), config_start))
 
     logger.info("Bot iniciado ✅")
-   app.run_webhook(
-    listen="0.0.0.0",
-    port=PORT,
-    url_path=TOKEN,
-    webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 8443)),
+        url_path=TOKEN,
+        webhook_url=f"{os.environ.get('WEBHOOK_URL')}/{TOKEN}"
     )
 
 
