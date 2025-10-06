@@ -1,10 +1,11 @@
-import sys
-import collections
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, filters,
+    ContextTypes, ConversationHandler, CallbackQueryHandler, JobQueue
+)
 import json
 from pathlib import Path
 from datetime import datetime, time
-import matplotlib
-matplotlib.use('Agg')  # Configuración esencial para Render
 import matplotlib.pyplot as plt
 import seaborn as sns
 import io
@@ -12,34 +13,9 @@ import logging
 import signal
 import pickle
 import os
-import numpy as np
-from sklearn.linear_model import LinearRegression
-from dotenv import load_dotenv
-from flask import Flask, jsonify
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, filters,
-    ContextTypes, ConversationHandler, CallbackQueryHandler, JobQueue
-)
-
-# Solución para error en Python 3.13
-if sys.version_info >= (3, 13):
-    if not hasattr(collections.abc, 'Callable'):
-        collections.abc.Callable = collections.abc.Callable = getattr(collections, 'Callable')
-
-# Configura Flask para mantener activo el servicio
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot de finanzas activo", 200
-
-@app.route('/health')
-def health_check():
-    return jsonify({"status": "active", "service": "telegram-bot"}), 200
+from telegram import Bot
 
 # Configuración inicial
-load_dotenv()
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -47,6 +23,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TOKEN")
+bot = Bot(token=TOKEN)
+
 DB_FILE = Path(__file__).parent / "finanzas.json"
 STATE_FILE = Path(__file__).parent / "conversation_states.pkl"
 
@@ -88,7 +66,7 @@ productos_keyboard = ReplyKeyboardMarkup(
 resumen_keyboard = ReplyKeyboardMarkup(
     [["Resumen de gastos", "Resumen de ingresos"], 
      ["Resumen general", "Gráfico", "Análisis de hábitos"],
-     ["Recomendaciones IA", "Exportar datos", "🔙 Menú principal"]],
+     ["Exportar datos", "🔙 Menú principal"]],
     resize_keyboard=True
 )
 
@@ -147,110 +125,10 @@ def fmt_cup(value: float) -> str:
     return f"{s} CUP"
 
 # =============================
-# IA - RECOMENDACIONES
-# =============================
-def generar_recomendaciones_ia(user):
-    """Genera recomendaciones personalizadas usando análisis predictivo"""
-    recomendaciones = []
-    
-    # 1. Análisis de hábitos de gasto
-    gastos = user.get('gastos', [])
-    if gastos:
-        # Agrupar gastos por categoría
-        gastos_por_categoria = {}
-        for gasto in gastos:
-            cat = gasto['categoria']
-            gastos_por_categoria[cat] = gastos_por_categoria.get(cat, 0) + gasto['monto']
-        
-        # Identificar categoría con mayor gasto
-        if gastos_por_categoria:
-            categoria_max = max(gastos_por_categoria, key=gastos_por_categoria.get)
-            total_gastos = sum(gastos_por_categoria.values())
-            porcentaje_max = (gastos_por_categoria[categoria_max] / total_gastos) * 100
-            
-            if porcentaje_max > 40:
-                recomendaciones.append(
-                    f"⚠️ Estás gastando el {porcentaje_max:.1f}% de tu dinero en '{categoria_max}'. "
-                    "Considera reducir gastos en esta categoría."
-                )
-    
-    # 2. Análisis de ahorros
-    ingresos = sum(i['monto'] for i in user.get('ingresos', []))
-    gastos_totales = sum(g['monto'] for g in gastos)
-    
-    if ingresos > 0:
-        porcentaje_ahorro = ((ingresos - gastos_totales) / ingresos) * 100
-        
-        if porcentaje_ahorro < 10:
-            recomendaciones.append(
-                f"💡 Solo estás ahorrando el {porcentaje_ahorro:.1f}% de tus ingresos. "
-                "Intenta ahorrar al menos el 20% para mejores resultados."
-            )
-        elif porcentaje_ahorro > 30:
-            recomendaciones.append(
-                f"✅ Excelente! Estás ahorrando el {porcentaje_ahorro:.1f}% de tus ingresos. "
-                "Considera invertir parte de tus ahorros."
-            )
-    
-    # 3. Predicción de tendencias
-    if len(gastos) > 10:
-        try:
-            # Preparar datos para modelo predictivo
-            fechas = sorted([datetime.fromisoformat(g['fecha']) for g in gastos])
-            montos = [g['monto'] for g in sorted(gastos, key=lambda x: x['fecha'])]
-            
-            # Crear secuencia numérica para fechas
-            dias = np.array([(f - fechas[0]).days for f in fechas]).reshape(-1, 1)
-            
-            # Entrenar modelo simple
-            modelo = LinearRegression()
-            modelo.fit(dias, montos)
-            
-            # Predecir próximo mes
-            prox_mes = dias[-1][0] + 30
-            prediccion = modelo.predict([[prox_mes]])[0]
-            promedio_actual = np.mean(montos)
-            
-            if prediccion > promedio_actual * 1.2:
-                aumento_porcentual = ((prediccion - promedio_actual) / promedio_actual) * 100
-                recomendaciones.append(
-                    f"📈 Según tus tendencias, tus gastos podrían aumentar un "
-                    f"{aumento_porcentual:.1f}% el próximo mes. ¡Ten cuidado!"
-                )
-        except Exception as e:
-            logger.error(f"Error en predicción IA: {e}")
-    
-    # 4. Recomendaciones basadas en productos frecuentes
-    productos = user.get('productos', {})
-    if productos:
-        # Identificar producto más comprado
-        compras_por_producto = {}
-        for gasto in gastos:
-            if 'producto' in gasto:
-                prod = gasto['producto']
-                compras_por_producto[prod] = compras_por_producto.get(prod, 0) + 1
-        
-        if compras_por_producto:
-            producto_frecuente = max(compras_por_producto, key=compras_por_producto.get)
-            recomendaciones.append(
-                f"🛒 Compras frecuentes de '{producto_frecuente}'. "
-                f"¿Has considerado comprar al por mayor para ahorrar?"
-            )
-    
-    # 5. Recomendaciones generales si no hay específicas
-    if not recomendaciones:
-        recomendaciones.append(
-            "💡 Consejo financiero: Automatiza tus ahorros. "
-            "Destina un porcentaje fijo de cada ingreso a una cuenta de ahorros antes de gastar."
-        )
-    
-    return recomendaciones
-
-# =============================
 # START
 # =============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 ¡Hola! Soy tu asistente financiero. Usa los botones para navegar:", reply_markup=main_keyboard)
+    await update.message.reply_text("👋 Qué bolá, mi hermano. Usa los botones para navegar:", reply_markup=main_keyboard)
 
 # =============================
 # INGRESOS
@@ -262,7 +140,7 @@ async def ingreso_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ingreso_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "🔙 Menú principal":
-        await update.message.reply_text("Volviendo al menú principal.", reply_markup=main_keyboard)
+        await update.message.reply_text("Volvemos al menú principal.", reply_markup=main_keyboard)
         return ConversationHandler.END
     if text == "🎯 Otro":
         await update.message.reply_text("Escribe el nombre de la categoría:")
@@ -311,7 +189,7 @@ async def gasto_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def gasto_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "🔙 Menú principal":
-        await update.message.reply_text("Volviendo al menú principal.", reply_markup=main_keyboard)
+        await update.message.reply_text("Volvemos al menú principal.", reply_markup=main_keyboard)
         return ConversationHandler.END
 
     context.user_data['gasto_categoria'] = text
@@ -337,7 +215,7 @@ async def gasto_producto_seleccion(update: Update, context: ContextTypes.DEFAULT
     user = _get_user(data, query.from_user.id)
 
     if query.data == "cancel":
-        await query.message.reply_text("Operación cancelada.", reply_markup=main_keyboard)
+        await query.message.reply_text("Has vuelto al menú principal ✅", reply_markup=main_keyboard)
         return ConversationHandler.END
     elif query.data == "nuevo":
         await query.message.reply_text("Escribe el nombre del nuevo producto y su precio separado por coma (Ej: Arroz, 50):")
@@ -416,7 +294,7 @@ async def productos_opcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = _get_user(db, update.effective_user.id)
 
     if text == "🔙 Menú principal":
-        await update.message.reply_text("Volviendo al menú principal.", reply_markup=main_keyboard)
+        await update.message.reply_text("Volvemos al menú principal.", reply_markup=main_keyboard)
         return ConversationHandler.END
     elif text == "Agregar Producto":
         await update.message.reply_text("Escribe el nombre del producto y precio separados por coma (Ej: Arroz, 50):")
@@ -608,7 +486,7 @@ async def resumen_opcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     gastos = [g for g in user.get('gastos', []) if filtrar_mes(g)]
 
     if text == "🔙 Menú principal":
-        await update.message.reply_text("Volviendo al menú principal.", reply_markup=main_keyboard)
+        await update.message.reply_text("Volvemos al menú principal.", reply_markup=main_keyboard)
         return ConversationHandler.END
 
     if text == "Resumen de gastos":
@@ -708,13 +586,6 @@ async def resumen_opcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(msg, reply_markup=resumen_keyboard)
 
-    elif text == "Recomendaciones IA":
-        recomendaciones = generar_recomendaciones_ia(user)
-        msg = "🤖 Recomendaciones de Inteligencia Artificial:\n\n"
-        msg += "\n".join([f"• {r}" for r in recomendaciones])
-        
-        await update.message.reply_text(msg, reply_markup=resumen_keyboard)
-
     elif text == "Exportar datos":
         # Crear CSV
         csv_content = "Tipo,Categoría,Producto,Monto,Fecha\n"
@@ -746,7 +617,7 @@ async def config_opcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
     if text == "🔙 Menú principal":
-        await update.message.reply_text("Volviendo al menú principal.", reply_markup=main_keyboard)
+        await update.message.reply_text("Volvemos al menú principal.", reply_markup=main_keyboard)
         return ConversationHandler.END
     elif text == "💸 Establecer presupuesto":
         await update.message.reply_text(
@@ -772,7 +643,7 @@ async def config_opcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_budget_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
     categoria = update.message.text
     if categoria == "🔙 Menú principal":
-        await update.message.reply_text("Volviendo al menú principal.", reply_markup=main_keyboard)
+        await update.message.reply_text("Volvemos al menú principal.", reply_markup=main_keyboard)
         return ConversationHandler.END
     
     context.user_data['budget_cat'] = categoria
@@ -822,14 +693,13 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error enviando recordatorio a {user_id}: {e}")
 
 # =============================
-# MAIN (con Flask para Render)
+# MAIN
 # =============================
-def run_bot():
-    # Configurar y ejecutar el bot
-    app_bot = ApplicationBuilder().token(TOKEN).build()
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
     
     # Configurar job de recordatorios
-    job_queue = app_bot.job_queue
+    job_queue = app.job_queue
     if job_queue:
         job_queue.run_daily(
             daily_reminder,
@@ -841,7 +711,7 @@ def run_bot():
 
     # Handlers
     conv_ingreso = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^\+ Ingreso$"), ingreso_start)],
+        entry_points=[MessageHandler(filters.Regex("➕ Ingreso"), ingreso_start)],
         states={
             SELECT_INGRESO_CAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ingreso_categoria)],
             INGRESO_OTRO: [MessageHandler(filters.TEXT & ~filters.COMMAND, ingreso_otro)],
@@ -852,7 +722,7 @@ def run_bot():
     )
 
     conv_gasto = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^- Gasto$"), gasto_start)],
+        entry_points=[MessageHandler(filters.Regex("➖ Gasto"), gasto_start)],
         states={
             SELECT_GASTO_CAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, gasto_categoria)],
             SELECT_PRODUCTO_GASTO: [CallbackQueryHandler(gasto_producto_seleccion)],
@@ -863,7 +733,7 @@ def run_bot():
     )
 
     conv_productos = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^📦 Productos$"), productos_menu)],
+        entry_points=[MessageHandler(filters.Regex("📦 Productos"), productos_menu)],
         states={
             PRODUCTO_OPCION: [MessageHandler(filters.TEXT & ~filters.COMMAND, productos_opcion)],
             PRODUCTO_NUEVO: [MessageHandler(filters.TEXT & ~filters.COMMAND, agregar_producto)],
@@ -876,7 +746,7 @@ def run_bot():
     )
 
     conv_resumen = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^📊 Resumen$"), resumen_start)],
+        entry_points=[MessageHandler(filters.Regex("📊 Resumen"), resumen_start)],
         states={
             RESUMEN_OPCION: [MessageHandler(filters.TEXT & ~filters.COMMAND, resumen_opcion)],
         },
@@ -885,7 +755,7 @@ def run_bot():
     )
 
     conv_config = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^⚙️ Configuración$"), config_menu)],
+        entry_points=[MessageHandler(filters.Regex("⚙️ Configuración"), config_menu)],
         states={
             RESUMEN_OPCION: [MessageHandler(filters.TEXT & ~filters.COMMAND, config_opcion)],
             SET_BUDGET_CAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_budget_categoria)],
@@ -896,18 +766,18 @@ def run_bot():
     )
 
     # Añadir todos los handlers
-    app_bot.add_handler(CommandHandler("start", start))
-    app_bot.add_handler(conv_ingreso)
-    app_bot.add_handler(conv_gasto)
-    app_bot.add_handler(conv_productos)
-    app_bot.add_handler(conv_resumen)
-    app_bot.add_handler(conv_config)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(conv_ingreso)
+    app.add_handler(conv_gasto)
+    app.add_handler(conv_productos)
+    app.add_handler(conv_resumen)
+    app.add_handler(conv_config)
 
     # Manejar persistencia de estados
     if STATE_FILE.exists():
         try:
             with open(STATE_FILE, 'rb') as f:
-                app_bot.persistence = pickle.load(f)
+                app.persistence = pickle.load(f)
         except Exception as e:
             logger.error(f"Error cargando estados: {e}")
 
@@ -916,7 +786,7 @@ def run_bot():
         logger.info("Guardando estados de conversación...")
         try:
             with open(STATE_FILE, 'wb') as f:
-                pickle.dump(app_bot.persistence, f)
+                pickle.dump(app.persistence, f)
             logger.info("Estados guardados exitosamente")
         except Exception as e:
             logger.error(f"Error guardando estados: {e}")
@@ -926,16 +796,8 @@ def run_bot():
     original_sigint = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, save_states)
 
-    logger.info("Bot iniciado correctamente")
-    app_bot.run_polling()
+    print("Bot corriendo…")
+    app.run_polling()
 
 if __name__ == "__main__":
-    # Iniciar Flask en un hilo separado
-    import threading
-    threading.Thread(
-        target=app.run, 
-        kwargs={'host':'0.0.0.0','port':8080}
-    ).start()
-    
-    # Iniciar el bot
-    run_bot()
+    main()
